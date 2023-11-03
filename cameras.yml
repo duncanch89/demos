@@ -1,0 +1,91 @@
+version: "3.9"
+services:
+  frigate: # this indent is the start of the first container contained within the same docker-compose "stack"
+    container_name: frigate
+    privileged: true # this may not be necessary for all setups
+    restart: unless-stopped
+    image: ghcr.io/blakeblackshear/frigate:stable
+    shm_size: "1024mb" # update for your cameras based on calculation above
+    devices:
+      - /dev/bus/usb:/dev/bus/usb # makes device folders on local machine accessible to docker container
+     # - /dev/apex_0:/dev/apex_0 # passes a PCIe Coral, follow driver instructions here https://coral.ai/docs/m2/get-started/#2a-on-linux
+      - /dev/dri/renderD128 # gpu for hardware acceleration
+    volumes:
+      - /etc/localtime:/etc/localtime:ro 
+      - ./frigate/config.yml:/config/config.yml 
+      - /srv/dev-disk-by-uuid-02792c6b-bb1a-4a02-825a-045446af95ff/cameras/frigate:/media/frigate # the HDD file system is located in /srv on OMV. I mount this particular folder outside my /docker directory because this container will store video clips from my camera feeds and will eat up a lot of space in linux filesystem. I could re-mount this drive out to another folder with a more user-friendly path to make life easier on myself, but I haven't
+      - type: tmpfs # Optional: 1GB of memory, reduces SSD/SD Card wear
+        target: /tmp/cache
+        tmpfs:
+          size: 1000000000 
+    deploy:    # <------------- Add this section
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+             # device_ids: ['0'] # this is only needed when using multiple GPUs
+              count: 1 # number of GPUs
+              capabilities: [gpu]
+    ports:
+      - "5001:5000" # changed port to 5001 because 5000 is also being used by deepstack, below
+      - "8554:8554" # RTSP feeds
+      - "8555:8555/tcp" # WebRTC over tcp
+      - "8555:8555/udp" # WebRTC over udp
+    environment:
+      FRIGATE_RTSP_PASSWORD: "password"
+    networks:
+      - "appnet" 
+
+
+  deepstack: # this is the start of a new container contained within the same docker-compose "stack"
+    container_name: deepstack
+    restart: unless-stopped
+    image: deepquestai/deepstack:latest
+    ports:
+      - '5000:5000'
+    environment:
+      - VISION-DETECTION=True
+      - VISION-FACE=True
+#      - API-KEY=""
+    volumes:
+      - ./deepstack/detection:/modelstore/detection
+    networks:
+      - "appnet" # place docker containers on local docker network so that they can reference each other by container name
+
+
+  deepstack_ui: # this is the start of a new container contained within the same docker-compose "stack".
+    container_name: deepstack_ui
+    restart: unless-stopped
+    image: robmarkcole/deepstack-ui:latest
+    environment: 
+      - DEEPSTACK_IP=deepstack
+      - DEEPSTACK_PORT=5000
+#      - DEEPSTACK_API_KEY=""
+      - DEEPSTACK_TIMEOUT=20
+#      - DEEPSTACK_CUSTOM_MODEL=fire
+      - DEEPSTACK_UI_DEBUG_MODE=False
+    ports:
+      - '8501:8501' # this port is often where the container's web-based UI is located so 192.168.1.200:8501 gets me to this containers GUI
+    networks:
+      - "appnet" # place docker containers on local docker network so that they can reference each other by container name
+
+
+  double-take: # this is the start of a new container contained within the same docker-compose "stack"
+    container_name: double-take
+    image: jakowenko/double-take
+    restart: unless-stopped
+    volumes:
+      - ./double-take:/.storage
+    ports:
+      - 3000:3000
+    networks:
+      - "appnet" # place docker containers on local docker network so that they can reference each other by container name
+
+
+networks:
+  appnet:
+    external: true
+    name: appnet
+volumes:
+  frigate:
+  double-take:
